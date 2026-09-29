@@ -2,8 +2,6 @@ package com.codex.meetingrecorder;
 
 import android.Manifest;
 import android.app.Activity;
-import android.app.NotificationManager;
-import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
@@ -27,7 +25,7 @@ import rikka.shizuku.Shizuku;
 public class MainActivity extends Activity {
     private static final int SHIZUKU_REQUEST = 48123;
     private TextView shizukuStatus;
-    private TextView notificationStatus;
+    private TextView guardStatus;
     private TextView recorderStatus;
     private TextView lastEvent;
     private Switch armedSwitch;
@@ -46,8 +44,6 @@ public class MainActivity extends Activity {
         setContentView(buildUi());
         Shizuku.addRequestPermissionResultListener(permissionListener);
         RecorderController.get(this).bindIfReady();
-        android.service.notification.NotificationListenerService.requestRebind(
-                new ComponentName(this, MeetingNotificationService.class));
         if (Prefs.isArmed(this)) startGuardService();
         requestNotificationPermission();
     }
@@ -94,19 +90,15 @@ public class MainActivity extends Activity {
 
         content.addView(section("运行条件"));
         shizukuStatus = statusLine();
-        notificationStatus = statusLine();
+        guardStatus = statusLine();
         recorderStatus = statusLine();
         content.addView(shizukuStatus);
-        content.addView(notificationStatus);
+        content.addView(guardStatus);
         content.addView(recorderStatus);
 
         Button shizuku = button("授权录制控制");
         shizuku.setOnClickListener(v -> requestShizuku());
         content.addView(shizuku, matchWrap());
-
-        Button listener = button("开启会议检测权限");
-        listener.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
-        content.addView(listener, matchWrap());
 
         Button battery = button("允许后台持续运行");
         battery.setOnClickListener(v -> {
@@ -155,7 +147,7 @@ public class MainActivity extends Activity {
         lastEvent.setBackgroundColor(Color.WHITE);
         content.addView(lastEvent, matchWrap());
 
-        TextView note = text("工作方式：直接检测 Zoom 会议界面，以及 Zoom、腾讯会议、微信、Teams、飞书、钉钉、QQ、WhatsApp、Telegram 等应用的通话音频状态；也支持 Chrome、Edge、Firefox、小米/三星浏览器等网页通话。通常在进入通话后 1–3 秒启动系统录屏，通话结束 20 秒后自动停止并保存。", 13, Color.GRAY);
+        TextView note = text("工作方式：每秒检测 Zoom 会议界面和主流会议、通话应用的通信音频状态，支持 Chrome、Edge、Firefox 等浏览器网页通话。检测到会议即启动系统录屏；通话结束 20 秒后停止并保存。", 13, Color.GRAY);
         note.setPadding(0, dp(18), 0, 0);
         content.addView(note);
 
@@ -167,8 +159,10 @@ public class MainActivity extends Activity {
     private void refresh() {
         boolean shizukuReady = RecorderController.get(this).isShizukuReady();
         shizukuStatus.setText((shizukuReady ? "✓" : "!") + " 录制控制：" + (shizukuReady ? "已就绪" : "未授权或 Shizuku 未运行"));
-        boolean listenerReady = isNotificationListenerEnabled();
-        notificationStatus.setText((listenerReady ? "✓" : "!") + " 会议检测：" + (listenerReady ? "已开启" : "需要授权"));
+        long lastPoll = MeetingGuardService.lastSuccessfulPollElapsed();
+        long age = lastPoll == 0 ? Long.MAX_VALUE : android.os.SystemClock.elapsedRealtime() - lastPoll;
+        guardStatus.setText((age < 10000 ? "✓" : "!") + " 后台检测：" +
+                (age < 10000 ? "运行中" : "尚未完成检查，请确认 Shizuku"));
         lastEvent.setText(Prefs.lastEvent(this));
         RecorderController.get(this).getStatus((ok, recording, detail) -> runOnUiThread(() ->
                 recorderStatus.setText((ok ? "✓" : "!") + " 系统录屏：" + (ok ? (recording ? "正在录制" : "当前未录制") : "状态不可读"))));
@@ -192,13 +186,6 @@ public class MainActivity extends Activity {
         } catch (Throwable error) {
             toast("Shizuku 尚未就绪");
         }
-    }
-
-    private boolean isNotificationListenerEnabled() {
-        String enabled = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
-        if (enabled == null) return false;
-        ComponentName component = new ComponentName(this, MeetingNotificationService.class);
-        return enabled.contains(component.flattenToString()) || enabled.contains(getPackageName());
     }
 
     private void requestNotificationPermission() {

@@ -7,15 +7,11 @@ import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.ComponentName;
-import android.service.notification.NotificationListenerService;
 
 public class BootReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
         if (Intent.ACTION_MY_PACKAGE_REPLACED.equals(intent.getAction())) {
-            NotificationListenerService.requestRebind(
-                    new ComponentName(context, MeetingNotificationService.class));
             if (Prefs.isArmed(context)) context.startForegroundService(
                     new Intent(context, MeetingGuardService.class));
             return;

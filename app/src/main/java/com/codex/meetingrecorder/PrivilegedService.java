@@ -8,6 +8,7 @@ import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 
 public class PrivilegedService extends IPrivilegedService.Stub {
@@ -18,18 +19,26 @@ public class PrivilegedService extends IPrivilegedService.Stub {
 
     @Override
     public String runCommand(String command) {
+        Process process = null;
         try {
-            Process process = new ProcessBuilder("/system/bin/sh", "-c", command)
+            process = new ProcessBuilder("/system/bin/sh", "-c", command)
                     .redirectErrorStream(true)
                     .start();
-            String output = readAll(process.getInputStream());
-            if (!process.waitFor(35, TimeUnit.SECONDS)) {
+            final Process running = process;
+            FutureTask<String> reader = new FutureTask<>(() -> readAll(running.getInputStream()));
+            Thread readerThread = new Thread(reader, "meeting-command-output");
+            readerThread.setDaemon(true);
+            readerThread.start();
+            if (!process.waitFor(5, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
                 return "ERROR: command timeout";
             }
+            String output = reader.get(1, TimeUnit.SECONDS);
             return "EXIT=" + process.exitValue() + "\n" + output;
         } catch (Throwable error) {
             return "ERROR: " + error.getClass().getSimpleName() + ": " + error.getMessage();
+        } finally {
+            if (process != null && process.isAlive()) process.destroyForcibly();
         }
     }
 
