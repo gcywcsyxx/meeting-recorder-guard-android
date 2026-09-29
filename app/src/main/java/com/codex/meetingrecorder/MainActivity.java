@@ -46,6 +46,9 @@ public class MainActivity extends Activity {
         setContentView(buildUi());
         Shizuku.addRequestPermissionResultListener(permissionListener);
         RecorderController.get(this).bindIfReady();
+        android.service.notification.NotificationListenerService.requestRebind(
+                new ComponentName(this, MeetingNotificationService.class));
+        if (Prefs.isArmed(this)) startGuardService();
         requestNotificationPermission();
     }
 
@@ -84,6 +87,8 @@ public class MainActivity extends Activity {
         armedSwitch.setOnCheckedChangeListener((button, checked) -> {
             Prefs.setArmed(this, checked);
             button.setText(checked ? "自动守护已开启" : "自动守护已暂停");
+            if (checked) startGuardService();
+            else stopService(new Intent(this, MeetingGuardService.class));
         });
         content.addView(armedSwitch, matchWrap());
 
@@ -200,6 +205,12 @@ public class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 42);
         }
+    }
+
+    private void startGuardService() {
+        Intent intent = new Intent(this, MeetingGuardService.class);
+        if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent);
+        else startService(intent);
     }
 
     private TextView section(String value) {

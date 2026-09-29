@@ -19,7 +19,7 @@ import java.util.Locale;
 import java.util.Map;
 
 public class MeetingNotificationService extends NotificationListenerService {
-    private static final String[][] TARGETS = {
+    static final String[][] TARGETS = {
             {"us.zoom.videomeetings", "Zoom"},
             {"com.tencent.wemeet.app", "腾讯会议"},
             {"com.tencent.mm", "微信"},
@@ -122,6 +122,13 @@ public class MeetingNotificationService extends NotificationListenerService {
     };
 
     @Override
+    public void onCreate() {
+        super.onCreate();
+        handler.removeCallbacks(audioPoll);
+        handler.post(audioPoll);
+    }
+
+    @Override
     public void onListenerConnected() {
         super.onListenerConnected();
         createChannel();
@@ -153,10 +160,14 @@ public class MeetingNotificationService extends NotificationListenerService {
 
     @Override
     public void onListenerDisconnected() {
-        handler.removeCallbacks(audioPoll);
         handler.removeCallbacks(watchdog);
         handler.removeCallbacks(startRunnable);
         handler.removeCallbacks(stopRunnable);
+        // Some Android variants briefly disconnect a listener during an APK update
+        // without destroying the Service. Audio polling is independent of notification
+        // access, so keep it alive instead of silently losing automatic recording.
+        handler.removeCallbacks(audioPoll);
+        handler.postDelayed(audioPoll, 1000);
         super.onListenerDisconnected();
     }
 
