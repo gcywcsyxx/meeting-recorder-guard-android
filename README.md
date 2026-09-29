@@ -1,0 +1,71 @@
+# Meeting Recorder Guard / 会议录音守护
+
+Android 通话与会议自动录屏守护工具。进入受支持的会议或通话后自动启动系统录屏；退出后等待 20 秒确认通话确实结束，再停止并保存到系统相册。
+
+> 当前为 **Xiaomi / HyperOS beta**。通话检测可以跨品牌安装和运行，但无交互控制系统录屏依赖厂商能力；目前只有小米/HyperOS 后端完成了带音频的端到端验证。详见[兼容性](#兼容性与安卓限制)。
+
+## 支持的通话信号
+
+- 会议与通话 App：Zoom、腾讯会议、微信、Microsoft Teams、飞书、钉钉、QQ、WhatsApp、Telegram、Google Meet、Webex、Skype、Messenger、Signal、LINE。
+- 浏览器 WebRTC 通话：Chrome、Edge、Firefox、三星浏览器、小米浏览器、Brave、Opera、Vivaldi、夸克、UC。可覆盖 Zoom Web、Teams Web、Google Meet 等网页会议。
+- Zoom 另有会议界面兜底，即使用户关闭 Zoom 通知也能触发。
+
+普通网页、在线视频和音乐不会触发；浏览器只有真正进入 Android 通信音频模式时才会被识别。
+
+## 安装与首次设置
+
+1. 从 GitHub Releases 下载并安装 APK（Android 11 或以上）。
+2. 安装并启动 [Shizuku](https://github.com/RikkaApps/Shizuku)。非 Root 手机通常需要用无线调试启动，重启手机后需重新启动 Shizuku。
+3. 打开“会议录音守护”，依次完成：
+   - 授权录制控制；
+   - 开启会议检测权限（通知使用权）；
+   - 允许后台持续运行并关闭厂商省电限制。
+4. 保持“自动守护已开启”。进入通话后约 1–3 秒自动录制；退出后约 20 秒自动停止并保存。
+
+应用会持续核验录制状态。若系统录屏被意外停止，而通话仍在继续，会尝试重新启动并发出警告通知。
+
+## 兼容性与安卓限制
+
+| 环境 | 通话检测 | 静默启动/停止带音频录屏 | 状态 |
+|---|---:|---:|---|
+| Xiaomi / HyperOS，带 `com.miui.screenrecorder` AppFunction | 是 | 是 | 已在真机验证 |
+| 其他厂商 Android | 是 | 取决于厂商系统录屏接口 | 可安装，录屏后端待适配 |
+| 浏览器 WebRTC 通话 | 是 | 同上 | 已实现通信音频检测 |
+
+这是 Android 平台限制，不是简单增加权限即可绕过：普通第三方 App 的 MediaProjection 通常需要用户确认，Android 新版本还会限制重复使用授权；Shizuku 自带的通用 `screenrecord` 命令通常只能保证视频，不能保证会议内部音频。因此本项目不会把“可安装”描述成“所有品牌都已可靠录到声音”。欢迎针对三星、OPPO、vivo、荣耀等机型提交系统录屏控制适配。
+
+## 隐私与安全
+
+- 应用不申请联网权限，不上传录像，不做转写，也不包含分析 SDK。
+- 录像由系统录屏器保存到本机相册（小米通常为 `DCIM/ScreenRecorder`）。
+- 通话检测只读取当前通信音频所属应用和受支持 App 的会议通知，不读取聊天内容。
+- Shizuku 提供高权限命令能力。只从可信来源安装 APK，并在不使用时关闭自动守护或撤销授权。
+
+使用前请遵守当地法律、公司政策和会议规则，并在需要时取得所有参与者同意。
+
+更多细节见 [PRIVACY.md](PRIVACY.md)。
+
+## 工作原理
+
+1. 由系统 Notification Listener 托管后台检测循环。
+2. 每 2 秒读取 Android 当前 `AudioModeOwner`，只在 `MODE_IN_COMMUNICATION` 且 UID 属于目标 App/浏览器时认定通话已接通。
+3. 调用小米系统录屏 AppFunction 启动、查询和停止录屏。
+4. 通话中每 7 秒执行一次录制看门狗检查。
+5. 信号消失后等待 20 秒再停止，避免切换界面、弱网或短暂断音造成误停。
+
+## 从源码构建
+
+要求：JDK 17、Android SDK 36、Gradle 8.11.1。
+
+```powershell
+gradle assembleRelease
+```
+
+Release APK 需要使用你自己的 Android 签名密钥签名。仓库不会包含发布密钥、密码、真机录像或设备日志。
+
+## 当前验证范围
+
+- Xiaomi / HyperOS：系统录屏启动、状态核验、停止、保存，以及 MP4 视频轨和 AAC 音轨已验证。
+- Zoom 原生 App：真实会议的 Android 通信音频信号已验证；针对“通知被关闭导致漏录”已增加音频/界面双重触发。
+- 其他 App 与不同厂商机型需要更多真机矩阵测试。请不要仅根据“检测到通话”推断最终文件一定含内部音频。
+
