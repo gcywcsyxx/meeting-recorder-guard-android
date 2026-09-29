@@ -1,0 +1,2 @@
+-keep class com.codex.meetingrecorder.PrivilegedService { *; }
+-keep class com.codex.meetingrecorder.IPrivilegedService { *; }
