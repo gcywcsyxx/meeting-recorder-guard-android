@@ -28,7 +28,7 @@ public class MeetingGuardService extends Service {
     private static final long POLL_MS = 1000;
     private static final long POLL_TIMEOUT_MS = 8000;
     private static final long START_DELAY_MS = 0;
-    private static final long STOP_DELAY_MS = 20000;
+    private static final long STOP_DELAY_MS = StopPolicy.END_CONFIRM_MS;
     private static final long WATCHDOG_MS = 7000;
     private static final long CONTROL_TIMEOUT_MS = 15000;
 
@@ -44,6 +44,10 @@ public class MeetingGuardService extends Service {
     private boolean controlInFlight;
     private long controlStartedAt;
     private int controlGeneration;
+    private boolean stopPending;
+    private boolean stopInFlight;
+    private int stopGeneration;
+    private long stopStartedAt;
     private final int[] targetUids = new int[MeetingTargets.APPS.length];
     private final String[] targetLabels = new String[MeetingTargets.APPS.length];
 
@@ -95,6 +99,9 @@ public class MeetingGuardService extends Service {
                         if (!next.equals(audioApp)) {
                             audioApp = next;
                             evaluate();
+                        } else if (next.isEmpty() && Prefs.startedByUs(MeetingGuardService.this)) {
+                            // Also recover an unfinished stop after a service restart or failed command.
+                            evaluate();
                         }
                     }));
         }
@@ -121,17 +128,33 @@ public class MeetingGuardService extends Service {
     };
 
     private final Runnable stopRunnable = () -> {
+        stopPending = false;
         if (!audioApp.isEmpty()) return;
+        if (stopInFlight) {
+            if (StopPolicy.awaitingStop(true, stopStartedAt, SystemClock.elapsedRealtime(), CONTROL_TIMEOUT_MS)) return;
+            stopGeneration++;
+            stopInFlight = false;
+            RecorderController.get(this).recoverFromStalledControl();
+        }
         meetingActive = false;
         controlGeneration++;
         controlInFlight = false;
         handler.removeCallbacks(watchdog);
         if (Prefs.startedByUs(this)) {
-            RecorderController.get(this).stop((success, recording, detail) -> {
-                Prefs.setStartedByUs(this, false);
-                Prefs.event(this, now() + (success ? " 通话结束，录制已停止并保存" : " 停止录制失败，请手动检查"));
-                updateNotification(success ? "上次录像已自动保存" : "自动停止失败，请手动停止");
-            });
+            stopInFlight = true;
+            stopStartedAt = SystemClock.elapsedRealtime();
+            int generation = ++stopGeneration;
+            RecorderController.get(this).stop((success, recording, detail) -> handler.post(() -> {
+                if (generation != stopGeneration) return;
+                stopInFlight = false;
+                boolean stopped = success && !recording;
+                // Keep ownership until the recorder explicitly confirms it has stopped.
+                if (stopped) Prefs.setStartedByUs(this, false);
+                Prefs.event(this, now() + (stopped ? " 通话结束，录制已停止并保存" : " 停止录制未确认，正在重试"));
+                updateNotification(stopped ? "上次录像已自动保存" : "正在重试停止；必要时请手动停止");
+                if (audioApp.isEmpty() && !stopped) evaluate();
+                else if (!audioApp.isEmpty()) ensureRecording();
+            }));
         } else {
             updateNotification("自动守护运行中");
         }
@@ -167,6 +190,7 @@ public class MeetingGuardService extends Service {
     public void onDestroy() {
         pollGeneration++;
         controlGeneration++;
+        stopGeneration++;
         handler.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
@@ -176,15 +200,19 @@ public class MeetingGuardService extends Service {
 
     private void evaluate() {
         handler.removeCallbacks(startRunnable);
-        handler.removeCallbacks(stopRunnable);
         if (!audioApp.isEmpty()) {
+            handler.removeCallbacks(stopRunnable);
+            stopPending = false;
             if (!meetingActive) handler.postDelayed(startRunnable, START_DELAY_MS);
-        } else if (meetingActive) {
+        } else if (StopPolicy.shouldSchedule(meetingActive, Prefs.startedByUs(this), stopPending)) {
+            // Never postpone the deadline on each idle poll.
+            stopPending = true;
             handler.postDelayed(stopRunnable, STOP_DELAY_MS);
         }
     }
 
     private void ensureRecording() {
+        if (audioApp.isEmpty() || stopInFlight || !Prefs.isArmed(this)) return;
         RecorderController controller = RecorderController.get(this);
         if (controlInFlight) {
             if (SystemClock.elapsedRealtime() - controlStartedAt < CONTROL_TIMEOUT_MS) return;
@@ -204,12 +232,14 @@ public class MeetingGuardService extends Service {
         int generation = ++controlGeneration;
         controller.getStatus((ok, recording, detail) -> handler.post(() -> {
             if (generation != controlGeneration) return;
+            if (audioApp.isEmpty()) { controlInFlight = false; return; }
             if (ok && recording) {
                 controlInFlight = false;
                 updateNotification(activeApp + " 正在录制");
                 return;
             }
-            if (ok) Prefs.setStartedByUs(this, true);
+            // Persist ownership before enqueueing: a late start may finish after call exit.
+            Prefs.setStartedByUs(this, true);
             controller.start((started, nowRecording, startDetail) -> handler.post(() -> {
                 if (generation != controlGeneration) return;
                 controlInFlight = false;
@@ -218,7 +248,6 @@ public class MeetingGuardService extends Service {
                     Prefs.event(this, now() + " " + activeApp + " 录制已自动启动");
                     updateNotification(activeApp + " 正在录制");
                 } else {
-                    Prefs.setStartedByUs(this, false);
                     Prefs.event(this, now() + " 严重：检测到通话但录制启动失败：" + startDetail);
                     updateNotification("严重警告：录制启动失败，请手动录屏");
                 }

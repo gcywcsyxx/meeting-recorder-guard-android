@@ -1,0 +1,44 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {spawnSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
+
+const root=path.resolve(import.meta.dirname,'..');
+const git=(args,input)=>spawnSync('git',args,{cwd:root,input,encoding:'utf8',windowsHide:true,env:{...process.env,GCM_INTERACTIVE:'never'}});
+const origin=git(['remote','get-url','origin']).stdout.trim();
+const repo=origin.match(/^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?$/)?.[1];
+if(!repo)throw new Error('Expected GitHub origin');
+const credential=git(['credential','fill'],`protocol=https\nhost=github.com\nusername=${repo.split('/')[0]}\n\n`);
+if(credential.status!==0)throw new Error('GitHub sign-in unavailable');
+const secret=Object.fromEntries(credential.stdout.trim().split(/\r?\n/).map(x=>{const i=x.indexOf('=');return[x.slice(0,i),x.slice(i+1)];}));
+if(secret.host!=='github.com'||!secret.password)throw new Error('GitHub credential unavailable');
+const headers={Authorization:`Bearer ${secret.password}`,'User-Agent':'Meeting-Recorder-Release',Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'};
+async function api(route,method='GET',body){
+ const r=await fetch('https://api.github.com'+route,{method,headers:{...headers,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(45000),redirect:'error'});
+ if(!r.ok)throw new Error(`GitHub ${method} ${route}: ${r.status}`);
+ return r.json();
+}
+const version=fs.readFileSync(path.join(root,'app/build.gradle'),'utf8').match(/versionName '([^']+)'/)[1];
+const apkName=`MeetingRecorderGuard-v${version}.apk`;
+const apk=fs.readFileSync(path.resolve(root,'../../outputs',apkName));
+const digest=createHash('sha256').update(apk).digest('hex');
+const files=git(['ls-files','-z']).stdout.split('\0').filter(Boolean);
+if(files.some(n=>/\.(jks|keystore|apk|class|png|jpg|mp4)$|local\.properties|(^|\/)(build|\.gradle)\//.test(n)))throw new Error('Private/build files tracked');
+const metadata=await api(`/repos/${repo}`);
+const branch=metadata.default_branch;
+const ref=await api(`/repos/${repo}/git/ref/heads/${branch}`);
+const base=await api(`/repos/${repo}/git/commits/${ref.object.sha}`);
+const tree=await api(`/repos/${repo}/git/trees`,'POST',{base_tree:base.tree.sha,tree:files.map(name=>({path:name,mode:'100644',type:'blob',content:fs.readFileSync(path.join(root,name),'utf8')}))});
+const commit=await api(`/repos/${repo}/git/commits`,'POST',{message:`Fix call-end stop and release v${version}`,tree:tree.sha,parents:[ref.object.sha],author:{name:'Meeting Recorder Release',email:'release@example.invalid'}});
+if((await api(`/repos/${repo}/git/ref/heads/${branch}`)).object.sha!==ref.object.sha)throw new Error('Remote changed; not overwriting');
+await api(`/repos/${repo}/git/refs/heads/${branch}`,'PATCH',{sha:commit.sha,force:false});
+const release=await api(`/repos/${repo}/releases`,'POST',{tag_name:'v'+version,target_commitish:commit.sha,name:'Meeting Recorder Guard v'+version,body:fs.readFileSync(path.join(root,'CHANGELOG.md'),'utf8')+`\n\nAPK SHA-256: ${digest}`,draft:false,prerelease:true});
+const upload=release.upload_url.split('{')[0];
+if(new URL(upload).hostname!=='uploads.github.com')throw new Error('Unexpected upload host');
+const response=await fetch(upload+'?name='+encodeURIComponent(apkName),{method:'POST',headers:{...headers,'Content-Type':'application/vnd.android.package-archive'},body:apk,signal:AbortSignal.timeout(60000),redirect:'error'});
+if(!response.ok)throw new Error('APK upload failed: '+response.status);
+const asset=await response.json();
+if(asset.size!==apk.length)throw new Error('APK size mismatch');
+const final=await api(`/repos/${repo}/releases/tags/v${version}`);
+if(!final.assets.some(a=>a.id===asset.id && a.size===apk.length))throw new Error('Release verification failed');
+console.log(JSON.stringify({release:release.html_url,apk:asset.browser_download_url,commit:commit.sha,sha256:digest,bytes:apk.length}));

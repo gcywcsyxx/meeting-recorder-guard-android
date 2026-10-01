@@ -204,14 +204,14 @@ public final class RecorderController {
     public void stop(Callback callback) {
         submit(() -> {
             String status = runFunction("getRecordingStatus");
-            if (status.contains("isRecording: false")) {
+            if (StopPolicy.confirmedStopped(status)) {
                 callback.onResult(true, false, "当前没有录制");
                 return;
             }
             String output = runFunction("stopRecording");
             String verify = runFunction("getRecordingStatus");
             boolean recording = verify.contains("isRecording: true");
-            callback.onResult(!recording, recording, output + "\nVERIFY\n" + verify);
+            callback.onResult(StopPolicy.confirmedStopped(verify), recording, output + "\nVERIFY\n" + verify);
         }, callback);
     }
 
