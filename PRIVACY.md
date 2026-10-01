@@ -21,3 +21,6 @@
 录制文件由手机自带的系统录屏器创建和保存，本应用只负责在检测到通话时调用开始、查询和停止操作。卸载本应用不会删除已有录像。
 
 录制他人前，请确认你有权这样做并取得必要同意。
+# Short recordings (0.4.9)
+
+After an app-controlled recording stops, finalized videos with a positive duration below 5 seconds may be moved to system trash. Cleanup is bounded by media IDs observed before starting and at stopping, and restricted to DCIM/ScreenRecorder. Existing historical recordings are not swept. Metadata with unknown/zero duration or pending writes is retained. Only media metadata is inspected; no video contents are read or uploaded. Restore trashed recordings before the system retention period expires.

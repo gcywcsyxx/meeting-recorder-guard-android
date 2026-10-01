@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.9
+
+- Automatically trash finalized, positive-duration recordings shorter than 5 seconds created during an app-controlled session. Exactly 5 seconds is retained.
+- Freeze candidate media IDs at stop; historical videos, other folders, pending files and unknown durations are not removed.
+- Retry delayed media metadata at 2, 5, 12 and 30 seconds without blocking meeting polling.
+- Confirm start signals for 1.5 seconds and add a 6-second restart cooldown to reduce rapid Zoom start/stop loops; rapid call-end stopping remains.
+- Cleanup uses system trash rather than permanent deletion. No new permissions or network access.
+
 ## 0.4.8
 
 - Reduce call-end confirmation from 20 seconds to 1.5 seconds; recording starts remain immediate.

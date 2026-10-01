@@ -12,6 +12,8 @@ import java.util.ArrayDeque;
 import java.util.Queue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 import rikka.shizuku.Shizuku;
 
@@ -32,6 +34,11 @@ public final class RecorderController {
     private final Context context;
     private ExecutorService queryWorker = Executors.newSingleThreadExecutor();
     private ExecutorService controlWorker = Executors.newSingleThreadExecutor();
+    private final ScheduledExecutorService cleanupWorker = Executors.newSingleThreadScheduledExecutor();
+    private static final String CLEANUP_BASELINE = "cleanup_baseline";
+    private static final String MEDIA = "content://media/external/video/media";
+    private static final String MEDIA_QUERY = "content query --uri " + MEDIA +
+            " --projection _id:duration:relative_path:is_pending:is_trashed";
     private final Queue<Runnable> pendingControls = new ArrayDeque<>();
     private Runnable pendingQuery;
     private final Shizuku.UserServiceArgs serviceArgs;
@@ -192,6 +199,16 @@ public final class RecorderController {
                 callback.onResult(true, true, "已经处于录制状态");
                 return;
             }
+            // Bound cleanup to files added by this recording; never sweep historical videos.
+            if (!Prefs.get(context).contains(CLEANUP_BASELINE)) {
+                String snapshot = runCommand(MEDIA_QUERY);
+                if (ShortRecordingPolicy.validQuery(snapshot)) {
+                    long maxId=0;
+                    java.util.regex.Matcher ids=java.util.regex.Pattern.compile("(?:^|[ ,])_id=(\\d+)", java.util.regex.Pattern.MULTILINE).matcher(snapshot);
+                    while(ids.find()) maxId=Math.max(maxId,Long.parseLong(ids.group(1)));
+                    Prefs.get(context).edit().putLong(CLEANUP_BASELINE,maxId).commit();
+                }
+            }
             String output = runFunction("startRecording");
             boolean ok = output.contains("success: true") &&
                     (output.contains("isRecording: true") || output.toLowerCase().contains("start"));
@@ -205,14 +222,53 @@ public final class RecorderController {
         submit(() -> {
             String status = runFunction("getRecordingStatus");
             if (StopPolicy.confirmedStopped(status)) {
+                queueShortCleanup();
                 callback.onResult(true, false, "当前没有录制");
                 return;
             }
             String output = runFunction("stopRecording");
             String verify = runFunction("getRecordingStatus");
             boolean recording = verify.contains("isRecording: true");
+            if (StopPolicy.confirmedStopped(verify)) queueShortCleanup();
             callback.onResult(StopPolicy.confirmedStopped(verify), recording, output + "\nVERIFY\n" + verify);
         }, callback);
+    }
+
+    private void queueShortCleanup() {
+        long baseline=Prefs.get(context).getLong(CLEANUP_BASELINE,-1);
+        if(baseline<0) return;
+        String snapshot=runCommand(MEDIA_QUERY);
+        if(!ShortRecordingPolicy.validQuery(snapshot)) {
+            // Lose cleanup eligibility rather than accidentally include later manual recordings.
+            Prefs.get(context).edit().remove(CLEANUP_BASELINE).commit();
+            return;
+        }
+        // Freeze the candidate IDs before allowing a subsequent recording to start.
+        java.util.regex.Matcher ids=java.util.regex.Pattern.compile("(?:^|[ ,])_id=(\\d+)", java.util.regex.Pattern.MULTILINE).matcher(snapshot);
+        while(ids.find()) {
+            long id=Long.parseLong(ids.group(1));
+            if(id<=baseline) continue;
+            for(long delay:new long[]{2,5,12,30}) cleanupWorker.schedule(()->cleanupShort(id),delay,TimeUnit.SECONDS);
+        }
+        Prefs.get(context).edit().remove(CLEANUP_BASELINE).commit();
+    }
+
+    private void cleanupShort(long id) {
+        String output=runCommand(MEDIA_QUERY.replace(MEDIA,MEDIA+"/"+id));
+        for(ShortRecordingPolicy.Item item:ShortRecordingPolicy.parse(output)) {
+            if(item.id!=id || !item.isShort()) continue;
+            String result=runCommand("content update --uri "+MEDIA+"/"+id+
+                    " --bind is_trashed:i:1 --where 'duration>0 AND duration<5000 AND is_pending=0 AND is_trashed=0'");
+            String verify=runCommand(MEDIA_QUERY.replace(MEDIA,MEDIA+"/"+id+"?includeTrashed=1"));
+            boolean trashed=false;
+            if(result.startsWith("EXIT=0") && ShortRecordingPolicy.validQuery(verify))
+                for(ShortRecordingPolicy.Item checked:ShortRecordingPolicy.parse(verify))
+                    if(checked.id==id && checked.trashed) trashed=true;
+            if(trashed) {
+                Log.i(TAG,"Auto-cleaned short recording (system trash)");
+                Prefs.event(context,"已自动移入回收站：不足 5 秒的录屏");
+            } else Log.w(TAG,"Short recording cleanup not confirmed; retained");
+        }
     }
 
     private String runFunction(String function) {

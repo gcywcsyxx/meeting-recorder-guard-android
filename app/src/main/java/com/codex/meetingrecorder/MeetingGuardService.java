@@ -27,7 +27,8 @@ public class MeetingGuardService extends Service {
     private static final int NOTIFICATION_ID = 1000;
     private static final long POLL_MS = 1000;
     private static final long POLL_TIMEOUT_MS = 8000;
-    private static final long START_DELAY_MS = 0;
+    private static final long START_DELAY_MS = 1500;
+    private static final long RESTART_COOLDOWN_MS = 6000;
     private static final long STOP_DELAY_MS = StopPolicy.END_CONFIRM_MS;
     private static final long WATCHDOG_MS = 7000;
     private static final long CONTROL_TIMEOUT_MS = 15000;
@@ -48,6 +49,7 @@ public class MeetingGuardService extends Service {
     private boolean stopInFlight;
     private int stopGeneration;
     private long stopStartedAt;
+    private long lastStoppedAt;
     private final int[] targetUids = new int[MeetingTargets.APPS.length];
     private final String[] targetLabels = new String[MeetingTargets.APPS.length];
 
@@ -149,11 +151,17 @@ public class MeetingGuardService extends Service {
                 stopInFlight = false;
                 boolean stopped = success && !recording;
                 // Keep ownership until the recorder explicitly confirms it has stopped.
-                if (stopped) Prefs.setStartedByUs(this, false);
+                if (stopped) {
+                    Prefs.setStartedByUs(this, false);
+                    lastStoppedAt = SystemClock.elapsedRealtime();
+                }
                 Prefs.event(this, now() + (stopped ? " 通话结束，录制已停止并保存" : " 停止录制未确认，正在重试"));
                 updateNotification(stopped ? "上次录像已自动保存" : "正在重试停止；必要时请手动停止");
                 if (audioApp.isEmpty() && !stopped) evaluate();
-                else if (!audioApp.isEmpty()) ensureRecording();
+                else if (!audioApp.isEmpty()) {
+                    meetingActive = false;
+                    evaluate();
+                }
             }));
         } else {
             updateNotification("自动守护运行中");
@@ -203,7 +211,8 @@ public class MeetingGuardService extends Service {
         if (!audioApp.isEmpty()) {
             handler.removeCallbacks(stopRunnable);
             stopPending = false;
-            if (!meetingActive) handler.postDelayed(startRunnable, START_DELAY_MS);
+            if (!meetingActive) handler.postDelayed(startRunnable,
+                    Math.max(START_DELAY_MS, RESTART_COOLDOWN_MS - (SystemClock.elapsedRealtime() - lastStoppedAt)));
         } else if (StopPolicy.shouldSchedule(meetingActive, Prefs.startedByUs(this), stopPending)) {
             // Never postpone the deadline on each idle poll.
             stopPending = true;
